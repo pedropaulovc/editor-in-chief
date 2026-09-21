@@ -1,0 +1,75 @@
+name: Public capture
+description: Capture an operation, measurement, failure, or reusable engineering lesson.
+title: "Capture: "
+labels: [editorial-capture]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Everything here, including attachments, is public.** Do not share credentials, sensitive material, or another person's identifying details. The application never copies, uploads, transcribes, or commits raw footage. Rough notes are enough; no ghostwriting or additional publishing quota.
+
+        **Before-shop safety:** mount the phone before work outside motion, chip, and control paths. Never reach for it during an operation or repeat a cut for a shot. Capture setup, result, and measurement; collect detail clips only once safe. Use original/licensed imagery, never reproduced 2014 book imagery.
+
+        For Harmonic Analyzer, the [authoritative logbook template](https://github.com/pedropaulovc/harmonic-analyzer/blob/main/logbook/entries/TEMPLATE.md) remains the factual record. Entries belong in `logbook/entries/YYYY-MM-DD-<slug>.md` there. Raw media stays in ignored `logbook/media/`; selected book figures belong in `book/figures/hand/`. This capture is a pointer, not a second logbook.
+  - type: textarea
+    id: operation
+    attributes:
+      label: Attempted operation
+      description: What did you attempt? Do not infer a shop session from a CAD change.
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: What changed or failed
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Measured evidence
+      description: Actual observations, units, measurement method, and public commit/logbook links. Say unavailable rather than inventing a measurement.
+    validations:
+      required: true
+  - type: textarea
+    id: lesson
+    attributes:
+      label: Lesson or open question
+    validations:
+      required: true
+  - type: textarea
+    id: next
+    attributes:
+      label: Next step
+  - type: textarea
+    id: media
+    attributes:
+      label: Selected media references
+      description: Selected public photos, clip timecodes, or voice-memo/transcript links. Label any local-media pointer explicitly; a local path is not a public attachment.
+  - type: textarea
+    id: logbook
+    attributes:
+      label: Harmonic Analyzer logbook reference and fields
+      description: For machining only, link the authoritative human entry and preserve its fields. Leave not applicable for other work.
+      value: |
+        Logbook entry URL:
+        date:
+        module:
+        machine: lathe | mill | bench
+        part:
+        outcome: success | partial | scrapped | aborted
+        hours:
+  - type: textarea
+    id: story
+    attributes:
+      label: Existing story, if any
+      description: Link an editorial story to avoid selling the same work as another assignment.
+  - type: checkboxes
+    id: rights
+    attributes:
+      label: Public sharing and safety
+      options:
+        - label: I selected this material for public sharing and have rights to the imagery. No credentials, sensitive material, or third-party identifying details are included.
+          required: true
+        - label: Any capture was or will be performed safely; I will not repeat a cut for a shot or reach for a phone during an operation.
+          required: true

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Authoritative Harmonic Analyzer machining logbook
+    url: https://github.com/pedropaulovc/harmonic-analyzer/blob/main/logbook/entries/TEMPLATE.md
+    about: Keep machining entries in the existing logbook, not a duplicate factual record here.
+  - name: Harmonic Analyzer landing and email capture prerequisite
+    url: https://github.com/pedropaulovc/harmonic-analyzer/issues/472
+    about: Existing signup prerequisite; no new scope or invented prelaunch URL.

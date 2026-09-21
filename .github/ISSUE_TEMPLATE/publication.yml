@@ -1,0 +1,59 @@
+name: Register a manual publication
+description: Record an actual original or derivative URL and explicit publication time.
+title: "Publication: "
+labels: [editorial-publication]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This form and its attachments are public.** Submit only a real publication you made manually; a draft merge, review verdict, or Project move is not publication. No submitted URL is automatically fetched. Only an original marks a story Published. Optional derivatives do not increase original quotas.
+
+        If the blog or analytics do not yet exist, keep them tracked as prerequisites. The existing [Harmonic Analyzer landing/email-capture issue #472](https://github.com/pedropaulovc/harmonic-analyzer/issues/472) owns that scope; do not invent signup or prelaunch URLs.
+  - type: input
+    id: story
+    attributes:
+      label: Story issue
+      description: Number of an editorial-story issue in this repository, for example 12 or '#12'.
+    validations:
+      required: true
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Channel
+      options: [blog, bluesky, linkedin, youtube, tiktok]
+    validations:
+      required: true
+  - type: input
+    id: url
+    attributes:
+      label: Publication URL
+      description: Actual public HTTPS URL. Do not include credential or tracking-secret query parameters.
+      placeholder: https://
+    validations:
+      required: true
+  - type: input
+    id: published
+    attributes:
+      label: Published at
+      description: Explicit ISO date/time including timezone, for example 2026-09-21T10:30:00-07:00. Not a planned date.
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options: [original, derivative]
+    validations:
+      required: true
+  - type: textarea
+    id: outcomes
+    attributes:
+      label: Actual outcomes or audience questions
+      description: Optional real reader feedback, editing effort, or measurement references. Missing metrics stay unavailable; likes are not backer demand. Import metrics separately with units, observation time, and windows.
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Manual publication confirmation
+      options:
+        - label: I published this manually, the URL and time are real, and this public form contains no credentials or sensitive material.
+          required: true
