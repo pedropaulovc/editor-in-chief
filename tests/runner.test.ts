@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { State } from "../src/state";
-import { evidencePacket, withLock } from "../src/run";
+import { evidencePacket, status, withLock } from "../src/run";
 import type { Context, Evidence } from "../src/contracts";
 import { loadConfig } from "../src/config";
 import { triageRequest, deskRequest } from "../src/model-packet";
@@ -87,7 +87,7 @@ test("a crowded GitHub feed cannot starve sources or consume unseen revisions", 
       ),
     ).toBe(true);
   }));
-test("large durable candidate history stays usable within the model envelope", async () =>
+test("large durable history stays usable in model packets and concise status", async () =>
   fixture(async (ctx) => {
     const base = {
       source: "github" as const,
@@ -139,4 +139,95 @@ test("large durable candidate history stays usable within the model envelope", a
       ),
     ).toBe(true);
     expect(ctx.state.candidates()).toHaveLength(300);
+    const coverage = {
+      source: "github",
+      status: "degraded",
+      count: 60,
+      blockers: ["Traffic permission unavailable"],
+    };
+    ctx.state.set("coverage:github", coverage);
+    const observedAt = ctx.now.toISOString();
+    ctx.state.db.transaction(() => {
+      for (let index = 0; index < 500; index++) {
+        const repository = `${ctx.config.githubOwner}/${index === 0 ? "harmonic-analyzer" : `repo-${index}`}`;
+        for (const [kind, fields] of [
+          ["github-daily", { date: "2026-09-20" }],
+          [
+            "github-window",
+            {
+              uniques: 2,
+              windowStart: "2026-09-07T00:00:00.000Z",
+              windowEnd: "2026-09-20T00:00:00.000Z",
+            },
+          ],
+        ] as const)
+          ctx.state.db.query("INSERT INTO metrics(key,data) VALUES(?,?)").run(
+            `${kind}:${index}`,
+            JSON.stringify({
+              kind,
+              provenance: "github-traffic",
+              repository,
+              metric: "views",
+              value: 10,
+              observedAt,
+              ...fields,
+            }),
+          );
+      }
+    })();
+    const report = status(ctx);
+    expect(report.coverage[0]).toEqual(coverage);
+    expect(report.candidateCounts).toMatchObject({ backlog: 300, active: 1 });
+    expect(report.active).toEqual([
+      {
+        id: "candidate-0",
+        topic: "measured repair",
+        pillar: "harmonic-analyzer",
+        status: "Selected",
+        issueNumber: null,
+        evidenceCount: 1,
+        missingEvidenceCount: 8,
+      },
+    ]);
+    expect(report.metrics.reportedCounts.dailyRows).toBe(500);
+    expect(
+      report.metrics.latestWindows[
+        `${ctx.config.githubOwner}/harmonic-analyzer:views`
+      ],
+    ).toEqual({
+      observedAt,
+      start: "2026-09-07T00:00:00.000Z",
+      end: "2026-09-20T00:00:00.000Z",
+    });
+    expect(report.metrics.blogReadership).toContain("unavailable");
+    expect(report.metrics.conversion).toContain("Unavailable");
+    expect(JSON.stringify(report, null, 2).length).toBeLessThan(12_000);
+    expect(ctx.state.candidates()).toHaveLength(300);
+    expect(
+      ctx.state.db.query("SELECT COUNT(*) AS count FROM metrics").get(),
+    ).toEqual({ count: 1_000 });
+    ctx.state.putCandidate({
+      ...ctx.state.candidates()[0]!,
+      id: "archived-match",
+      topic: "Archived experiment",
+      missingEvidence: ["Searchable old calibration gap"],
+      status: "Inbox",
+      createdAt: "2020-01-01T00:00:00.000Z",
+    });
+    expect(
+      status(ctx).backlog!.some(
+        (candidate) => candidate.id === "archived-match",
+      ),
+    ).toBe(false);
+    const searched = status(ctx, "  CALIBRATION GAP  ");
+    expect(searched.backlog!.map((candidate) => candidate.id)).toEqual([
+      "archived-match",
+    ]);
+    expect(searched.candidateCounts).toMatchObject({
+      total: 301,
+      matching: 1,
+      backlog: 301,
+      matchingBacklog: 1,
+      matchingActive: 0,
+    });
   }));

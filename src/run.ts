@@ -293,14 +293,56 @@ export async function run(ctx: Context) {
   return { ...result, ...(ctx.mode === "dry-run" ? { proposals } : {}) };
 }
 
-export function status(ctx: Context) {
+export function status(ctx: Context, search?: string) {
   const last = ctx.state.get<any>("last-run", null),
     candidates = ctx.state.candidates();
+  const query = search?.trim().toLowerCase();
+  const matching = query
+    ? candidates.filter(
+        (candidate) =>
+          candidate.id.toLowerCase().includes(query) ||
+          candidate.topic.toLowerCase().includes(query) ||
+          candidate.pillar.toLowerCase().includes(query) ||
+          candidate.readerQuestions.some((value) =>
+            value.toLowerCase().includes(query),
+          ) ||
+          candidate.missingEvidence.some((value) =>
+            value.toLowerCase().includes(query),
+          ) ||
+          candidate.sourceIds.some((value) =>
+            value.toLowerCase().includes(query),
+          ),
+      )
+    : candidates;
   const pending = ctx.state.db
     .query(
       `SELECT count(*) AS count FROM evidence e LEFT JOIN kv k ON k.key='triaged:'||e.id WHERE k.value IS NULL OR json_extract(k.value,'$')<>e.revision`,
     )
     .get() as { count: number };
+  const activeStatuses = ["Selected", "Drafting", "Review", "Ready"];
+  const backlog = matching.filter((candidate) => !candidate.issueNumber);
+  const active = matching.filter((candidate) =>
+    activeStatuses.includes(candidate.status ?? ""),
+  );
+  const [backlogPreview, activePreview] = [backlog, active].map((items) =>
+    items.slice(0, 8).map((candidate) => ({
+      id: candidate.id,
+      topic: candidate.topic,
+      pillar: candidate.pillar,
+      status: candidate.status ?? "Inbox",
+      issueNumber: candidate.issueNumber ?? null,
+      evidenceCount: candidate.sourceIds.length,
+      missingEvidenceCount: candidate.missingEvidence.length,
+    })),
+  );
+  const metrics = metricsSummary(ctx);
+  const availabilityCounts: Record<string, number> = {};
+  for (const availability of Object.values(metrics.availability))
+    availabilityCounts[availability.status] =
+      (availabilityCounts[availability.status] ?? 0) + 1;
+  const windows = metrics.github.rolling.filter(
+    (metric) => metric.kind === "github-window",
+  );
   return {
     state: last
       ? Date.now() - Date.parse(last.completedAt) > 36 * 3600e3
@@ -312,12 +354,66 @@ export function status(ctx: Context) {
     coverage: ["github", "bluesky", "hindsight"].map((s) =>
       ctx.state.get(`coverage:${s}`, { source: s, status: "never-run" }),
     ),
-    backlog: candidates.filter((c) => !c.issueNumber),
-    active: candidates.filter((c) =>
-      ["Selected", "Drafting", "Review", "Ready"].includes(c.status ?? ""),
-    ),
+    backlog: backlogPreview,
+    active: activePreview,
+    search: search?.trim() || null,
+    candidateCounts: {
+      total: candidates.length,
+      matching: matching.length,
+      backlog: candidates.reduce(
+        (count, candidate) => count + Number(!candidate.issueNumber),
+        0,
+      ),
+      active: candidates.reduce(
+        (count, candidate) =>
+          count + Number(activeStatuses.includes(candidate.status ?? "")),
+        0,
+      ),
+      matchingBacklog: backlog.length,
+      matchingActive: active.length,
+      previewLimit: 8,
+    },
     pendingEvidence: pending.count,
     pendingReviews: ctx.state.get("pending-reviews", []),
-    metrics: metricsSummary(ctx),
+    metrics: {
+      observedAt: metrics.observedAt,
+      availability: {
+        counts: availabilityCounts,
+        unavailable: Object.entries(metrics.availability)
+          .filter(([, availability]) => availability.status === "unavailable")
+          .slice(0, 8)
+          .map(([stream]) => stream),
+        unavailablePreviewLimit: 8,
+      },
+      consistency: metrics.consistency,
+      reportedCounts: {
+        dailyRows: metrics.github.daily.length,
+        weeklyRows: metrics.github.weekly.length,
+        repositoryStreams: metrics.github.rolling.length,
+        socialStreams: metrics.bluesky.length,
+        manualMeasurements: metrics.channels.reduce(
+          (count, channel) => count + channel.measurements.length,
+          0,
+        ),
+        publicationObservations: metrics.publications.length,
+        missingInputs: metrics.inputRequests.length,
+      },
+      latestWindows: Object.fromEntries(
+        windows.slice(0, 4).map((metric) => [
+          `${metric.repository}:${metric.metric}`,
+          {
+            observedAt: metric.observedAt,
+            start: metric.windowStart,
+            end: metric.windowEnd,
+          },
+        ]),
+      ),
+      omittedWindows: Math.max(0, windows.length - 4),
+      blogReadership: metrics.blogReadership.length
+        ? "observed operator-supplied aggregates"
+        : "unavailable; actual destination measurements needed",
+      conversion: metrics.conversion,
+      note: "Bounded reporting counts and latest-window highlights, not complete history. Full measurements, candidate briefs and correction history remain in the local database. Missing measurements are unavailable, never zero; overlapping windows and uniques are not additive.",
+    },
   };
 }

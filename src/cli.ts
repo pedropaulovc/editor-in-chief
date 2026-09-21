@@ -20,7 +20,7 @@ bun run eic run --dry-run|--apply
 bun run eic review --pr NUMBER --dry-run|--apply
 bun run eic record-publication --issue NUMBER --channel CHANNEL --url HTTPS --published-at ISO --kind original|derivative
 bun run eic import-metrics FILE [--replace]
-bun run eic status
+bun run eic status [--search TEXT]
 bun run eic schedule install|show|remove
 Shared: --config FILE --state-dir DIRECTORY
 No draft prose is written or published automatically.`;
@@ -42,6 +42,7 @@ async function main() {
       "published-at": { type: "string" },
       kind: { type: "string" },
       replace: { type: "boolean" },
+      search: { type: "string" },
       help: { type: "boolean" },
     },
   });
@@ -50,6 +51,8 @@ async function main() {
     return;
   }
   const command = positionals[0];
+  if (values.search !== undefined && command !== "status")
+    throw new Error("--search is only supported by status");
   if (values.apply && values["dry-run"])
     throw new Error("Choose exactly one of --apply or --dry-run");
   if (
@@ -154,7 +157,7 @@ async function main() {
         );
         break;
       case "status":
-        result = status(ctx);
+        result = status(ctx, values.search);
         break;
       case "schedule":
         if (!["install", "show", "remove"].includes(positionals[1]))
