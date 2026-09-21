@@ -1,0 +1,11 @@
+{
+  "githubOwner": "pedropaulovc",
+  "repository": "pedropaulovc/editor-in-chief",
+  "blueskyHandle": "pedro.vza.net",
+  "hindsightUrl": "https://hindsight.vza.net",
+  "hindsightEnvFile": "~/.omp/agent/.env",
+  "timezone": "America/Los_Angeles",
+  "cadence": "weekly",
+  "model": "openai-codex/gpt-5.6",
+  "thinking": "medium"
+}

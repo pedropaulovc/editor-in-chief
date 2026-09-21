@@ -1,0 +1,8 @@
+{
+  "name": "editor-in-chief",
+  "private": true,
+  "type": "module",
+  "scripts": {"eic": "bun src/cli.ts", "test": "bun test"},
+  "dependencies": {"@oh-my-pi/pi-coding-agent": "18.2.7", "dotenv": "17.2.3", "zod": "4.1.12"},
+  "devDependencies": {"@types/bun": "1.3.10", "typescript": "5.9.3"}
+}

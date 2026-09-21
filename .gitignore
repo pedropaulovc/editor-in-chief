@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.*
+*.sqlite*
+.state/
+state/
+media/
+artifacts/
+*.log
