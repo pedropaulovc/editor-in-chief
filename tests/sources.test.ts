@@ -180,6 +180,56 @@ test("GitHub interruption resumes the next Link page without skipping prior evid
     });
   }));
 
+test("GitHub follows numeric public-event aliases without changing the source resource", async () =>
+  fixture(async (ctx, directory) => {
+    const first = `users/${ctx.config.githubOwner}/events/public?per_page=100`;
+    const second = `${first}&page=2`;
+    const tasks = [{ id: "events", kind: "events" }];
+    const event = {
+      public: true,
+      repo: { name: ctx.config.repository },
+      created_at: "2026-09-20T10:00:00Z",
+      type: "WatchEvent",
+      payload: {},
+    };
+    seedGithub(ctx, tasks, { events: true });
+    await fakeGithub(
+      directory,
+      {
+        [first]: {
+          data: [event],
+          headers: {
+            Link: '<https://api.github.com/user/577970/events/public?per_page=100&page=2>; rel="next"',
+          },
+        },
+        [second]: { data: [] },
+      },
+      async (setRoutes, requests) => {
+        expect((await collectGithub(ctx)).coverage.status).toBe("complete");
+        expect(requests()).toEqual([first, second]);
+        seedGithub(ctx, tasks, { events: true });
+        setRoutes({
+          [first]: {
+            data: [event],
+            headers: {
+              Link: '<https://api.github.com/user/577970/events/private?per_page=100&page=2>; rel="next"',
+            },
+          },
+        });
+        const rejected = await collectGithub(ctx);
+        expect(rejected.coverage.status).toBe("partial");
+        expect(
+          rejected.coverage.blockers?.some((message) =>
+            message.includes("unexpected pagination destination"),
+          ),
+        ).toBe(true);
+        expect(
+          requests().some((endpoint) => endpoint.includes("/private")),
+        ).toBe(false);
+      },
+    );
+  }));
+
 test("GitHub repository visibility and editorial automation exclusion gate all evidence hydration", async () =>
   fixture(async (ctx, directory) => {
     const privateRepo = "pedropaulovc/private-fixture";
@@ -246,6 +296,123 @@ test("GitHub repository visibility and editorial automation exclusion gate all e
         expect(ctx.state.evidence()).toEqual([]);
       },
     );
+  }));
+
+test("GitHub hydrates priority public evidence within one bounded collection without exhausting ordinary discovery", async () =>
+  fixture(async (ctx, directory) => {
+    const ordinary = Array.from(
+      { length: 100 },
+      (_, index) => `${ctx.config.githubOwner}/ordinary-fixture-${index}`,
+    );
+    // Queue el400 first so the outcome also distinguishes HA's higher priority.
+    const priority = ["el400", "harmonic-analyzer"].map((name, index) => {
+      const repository = `${ctx.config.githubOwner}/${name}`;
+      return { repository, data: commit(repository, index === 0 ? "a" : "b") };
+    });
+    ctx.state.set(
+      "source:github:repositories",
+      Object.fromEntries(
+        priority.map(({ repository }) => [
+          repository,
+          {
+            fullName: repository,
+            owner: ctx.config.githubOwner,
+            defaultBranch: "main",
+            public: true,
+            priority: true,
+            contributed: true,
+          },
+        ]),
+      ),
+    );
+    seedGithub(
+      ctx,
+      [
+        ...ordinary.map((repository) => ({
+          id: `repository:${repository}`,
+          kind: "repository",
+          repository,
+          priority: false,
+          contributed: false,
+        })),
+        ...priority.map(({ repository, data }) => ({
+          id: `commit:${repository}:${data.sha}`,
+          kind: "commit",
+          repository,
+          sha: data.sha,
+        })),
+      ],
+      Object.fromEntries(
+        [...ordinary, ...priority.map(({ repository }) => repository)].map(
+          (repository) => [`repository:${repository}`, true as const],
+        ),
+      ),
+    );
+    const routes: Record<string, Route> = Object.fromEntries(
+      ordinary.map((repository) => [
+        `repos/${repository}`,
+        {
+          data: {
+            full_name: repository,
+            private: false,
+            owner: { login: ctx.config.githubOwner },
+            default_branch: "main",
+          },
+        },
+      ]),
+    );
+    for (const { repository, data } of priority)
+      routes[`repos/${repository}/commits/${data.sha}`] = { data };
+    await fakeGithub(directory, routes, async (_setRoutes, requests) => {
+      const result = await collectGithub(ctx);
+      const expected = [...priority].reverse().map(({ repository, data }) => ({
+        id: `github:commit:${repository}:${data.sha}`,
+        source: "github",
+        sourceUrl: data.html_url,
+        revision: data.sha,
+        provenance: {
+          repository,
+          public: true,
+          verification: "public-source",
+        },
+      }));
+      expect(result.evidence).toMatchObject(expected);
+      for (const item of result.evidence) {
+        expect(item.text).toContain("Measured controller timing for fixture");
+        expect(item.text).toContain("modified: src/controller.ts");
+      }
+      expect(
+        ctx.state
+          .evidence()
+          .map((item) => item.id)
+          .sort(),
+      ).toEqual(expected.map((item) => item.id).sort());
+      expect(requests()).toHaveLength(80);
+      expect(requests().slice(0, 3)).toEqual([
+        `repos/${ordinary[0]}`,
+        ...[...priority]
+          .reverse()
+          .map(
+            ({ repository, data }) => `repos/${repository}/commits/${data.sha}`,
+          ),
+      ]);
+      expect(
+        requests().filter((endpoint) =>
+          endpoint.includes("/ordinary-fixture-"),
+        ),
+      ).toEqual(
+        ordinary.slice(0, 78).map((repository) => `repos/${repository}`),
+      );
+      expect(result.coverage.status).toBe("partial");
+      expect(result.coverage.checkpoint).toBeUndefined();
+      expect(result.coverage.blockers).toEqual([]);
+      const unfinished = ctx.state.get<{
+        current?: { tasks: Array<{ id: string }> };
+      }>("source:github", {});
+      expect(unfinished.current?.tasks.map((task) => task.id)).toEqual(
+        ordinary.slice(78).map((repository) => `repository:${repository}`),
+      );
+    });
   }));
 
 test("GitHub keeps failed windows pending while newer discovery and bounded continuation progress", async () =>

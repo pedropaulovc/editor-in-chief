@@ -218,21 +218,28 @@ function next(
   const numberedRepository = url.pathname.match(
     /^\/repositories\/[0-9]+(\/.+)$/,
   );
+  const namedUser = original.pathname.match(/^\/users\/[A-Za-z0-9-]+(\/.+)$/);
+  const numberedUser = url.pathname.match(/^\/user\/[0-9]+(\/.+)$/);
+  const sameRepositoryResource =
+    namedRepository &&
+    numberedRepository &&
+    namedRepository[1] === numberedRepository[1];
+  const sameUserResource =
+    namedUser && numberedUser && namedUser[1] === numberedUser[1];
   if (
     url.origin !== "https://api.github.com" ||
     url.username ||
     url.password ||
     url.hash ||
     (url.pathname !== original.pathname &&
-      (!namedRepository ||
-        !numberedRepository ||
-        namedRepository[1] !== numberedRepository[1]))
+      !sameRepositoryResource &&
+      !sameUserResource)
   )
     throw new SourceError(
       `GitHub unexpected pagination destination for ${original.pathname}: ${url.origin === "https://api.github.com" ? url.pathname : "different host"}`,
     );
-  // GitHub emits numeric repository aliases in Link headers. Keep our original
-  // repository path and only follow the page query, never a different resource.
+  // GitHub emits numeric repository/user aliases in Link headers. Keep our
+  // original named path and only follow the query, never a different resource.
   return original.pathname.slice(1) + url.search;
 }
 function publicUrl(value: string): string {
@@ -796,14 +803,38 @@ export async function collectGithub(ctx: Context): Promise<Collection> {
         .filter((task) => task.kind === "repository")
         .map((task) => task.repository),
     );
-    return window.tasks.findIndex(
-      (task) =>
-        !blocked.has(task) &&
-        (!("repository" in task) ||
+    let selected = -1,
+      best = -1;
+    for (let index = 0; index < window.tasks.length; index++) {
+      const task = window.tasks[index]!;
+      if (
+        blocked.has(task) ||
+        ("repository" in task &&
           (task.kind === "repository"
-            ? !blockedRepositories.has(task.repository)
-            : !metadataPending.has(task.repository))),
-    );
+            ? blockedRepositories.has(task.repository)
+            : metadataPending.has(task.repository)))
+      )
+        continue;
+      // Every third operation retains FIFO fairness; other turns fetch useful
+      // priority evidence rather than exhausting the budget enumerating metadata.
+      if (steps % 3 === 0) return index;
+      const repository = "repository" in task ? task.repository : "";
+      const priority =
+        repository === `${ctx.config.githubOwner}/harmonic-analyzer`
+          ? 100
+          : repository === `${ctx.config.githubOwner}/el400`
+            ? 90
+            : registry[repository]?.priority
+              ? 30
+              : 0;
+      const score =
+        priority + (["commit", "pull", "issue"].includes(task.kind) ? 10 : 0);
+      if (score > best) {
+        selected = index;
+        best = score;
+      }
+    }
+    return selected;
   }
   let steps = 0;
   let completed = 0;

@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { State } from "../src/state";
 import { loadConfig } from "../src/config";
 import type { Context, Publication } from "../src/contracts";
-import { collectMetrics, importMetrics, metricsSummary } from "../src/metrics";
+import {
+  collectMetrics,
+  deskMetrics,
+  importMetrics,
+  metricsSummary,
+} from "../src/metrics";
 import { isoWeek, nextSlots } from "../src/calendar";
 import { assertCronTimezone, updateCrontab } from "../src/schedule";
 
@@ -492,6 +497,97 @@ test("retained history cannot inflate weekly summaries or replace latest measure
       .query("SELECT data FROM metrics WHERE key=?")
       .get("github-uniques:history-0") as { data: string };
     expect(JSON.parse(retained.data).uniques).toBe(9_999);
+  }));
+
+test("primary reach and weekly counts survive crowded alphabetical reporting while the desk stays compact", async () =>
+  fixture(async (ctx) => {
+    const observedAt = "2026-09-20T12:00:00.000Z";
+    const put = (key: string, data: unknown) =>
+      ctx.state.db
+        .query("INSERT INTO metrics(key,data) VALUES(?,?)")
+        .run(key, JSON.stringify(data));
+    ctx.state.db.transaction(() => {
+      for (const [project, value] of [
+        ["harmonic-analyzer", 3],
+        ["el400", 5],
+        ...Array.from(
+          { length: 40 },
+          (_, index) => [`aaa-${index}`, 100] as const,
+        ),
+      ] as const) {
+        const repository = `${ctx.config.githubOwner}/${project}`;
+        for (const metric of ["views", "clones"]) {
+          put(`window:${project}:${metric}`, {
+            kind: "github-window",
+            provenance: "github-traffic",
+            repository,
+            metric,
+            value: value * 14,
+            uniques: value,
+            observedAt,
+            windowStart: "2026-09-07T00:00:00.000Z",
+            windowEnd: "2026-09-20T00:00:00.000Z",
+          });
+          for (let day = 7; day <= 20; day++) {
+            put(`daily:${project}:${metric}:${day}`, {
+              kind: "github-daily",
+              provenance: "github-traffic",
+              repository,
+              metric,
+              value,
+              observedAt,
+              date: `2026-09-${String(day).padStart(2, "0")}`,
+            });
+          }
+        }
+      }
+      for (const [did, followers, date] of [
+        ["did:plc:older", 9, "2026-09-19T12:00:00.000Z"],
+        ["did:plc:latest", 23, observedAt],
+      ] as const) {
+        put(`profile:${did}`, {
+          kind: "bluesky-profile",
+          provenance: "bluesky-public-api",
+          did,
+          followers,
+          observedAt: date,
+        });
+      }
+    })();
+    const summary = metricsSummary(ctx);
+    const report = deskMetrics(ctx);
+    const [lead, details] = report.split("<details>");
+    expect(lead).toContain("**harmonic-analyzer reach:** 42");
+    expect(lead).toContain("**el400 reach:** 70");
+    expect(lead).toContain("**Bluesky followers:** 23");
+    expect(lead).toContain("**Blog readership:** unavailable");
+    expect(lead).toContain("**Conversion:** unavailable");
+    expect(lead).toContain("Small or unknown samples");
+    expect(lead).toContain("do not establish causality");
+    expect(lead!.length).toBeLessThan(1_800);
+    expect(lead).not.toContain("aaa-");
+    expect(details).toContain(
+      "<summary>Detailed repository/social measurements</summary>",
+    );
+    for (const [project, value] of [
+      ["harmonic-analyzer", 21],
+      ["el400", 35],
+    ] as const) {
+      const repository = `${ctx.config.githubOwner}/${project}`;
+      expect(
+        summary.github.weekly
+          .slice(0, 8)
+          .filter((metric) => metric.repository === repository),
+      ).toHaveLength(4);
+      expect(details).toContain(
+        `2026-W38 ${repository}: ${value} views across 7 observed UTC days`,
+      );
+      expect(details).toContain(
+        `2026-W38 ${repository}: ${value} clones across 7 observed UTC days`,
+      );
+    }
+    expect(report.endsWith("</details>")).toBe(true);
+    expect(report.length).toBeLessThanOrEqual(8_000);
   }));
 
 test("calendar weeks and next three slots follow Los Angeles local dates through both DST transitions", () => {

@@ -28,6 +28,7 @@ let reviews: {
   submissions = 0,
   edits = 0;
 let boardStatus: string | null = "Inbox";
+let beforePullRead: (() => void) | null = null;
 const pageInfo = { hasNextPage: false, endCursor: null };
 const content = "The measurements are repeatable.\n";
 const issue = {
@@ -60,6 +61,8 @@ let discussion: {
 }[] = [];
 let boardWrites: string[] = [],
   beforeBoardRead: (() => void) | null = null;
+let omitBoardIndex = false,
+  boardAdds = 0;
 const pull = () => ({
   number: 10,
   node_id: "P_10",
@@ -80,7 +83,10 @@ const gh = async (
   } = {},
 ) => {
   if (endpoint === repo) return { node_id: "R_1", private: false };
-  if (endpoint === `${repo}/pulls/10`) return pull();
+  if (endpoint === `${repo}/pulls/10`) {
+    beforePullRead?.();
+    return pull();
+  }
   if (endpoint === `${repo}/issues/9`) {
     if (options.method === "PATCH") {
       issuePatches++;
@@ -186,6 +192,19 @@ const graphql = async (
       updateProjectV2ItemFieldValue: { projectV2Item: { id: "ITEM_9" } },
     };
   }
+  if (query.includes("addProjectV2ItemById")) {
+    boardAdds++;
+    return { addProjectV2ItemById: { item: { id: "ITEM_9" } } };
+  }
+  if (query.includes("... on ProjectV2Item{")) {
+    beforeBoardRead?.();
+    return {
+      node: {
+        id: "ITEM_9",
+        fieldValueByName: boardStatus ? { name: boardStatus } : null,
+      },
+    };
+  }
   if (query.includes("projectsV2"))
     return {
       user: {
@@ -242,6 +261,7 @@ const graphql = async (
     };
   if (query.includes("items(first:")) {
     beforeBoardRead?.();
+    if (omitBoardIndex) return { node: { items: { nodes: [], pageInfo } } };
     return {
       node: {
         items: {
@@ -304,6 +324,9 @@ async function fixture(body: (ctx: Context) => Promise<void>) {
   discussion = [];
   boardWrites = [];
   beforeBoardRead = null;
+  omitBoardIndex = false;
+  boardAdds = 0;
+  beforePullRead = null;
   const config = await loadConfig();
   config.hindsightEnvFile = join(directory, "absent.env");
   const ctx: Context = {
@@ -464,13 +487,11 @@ test("quoted candidate metadata outside the managed story cannot replace recover
     issue.body = `${human}\n\n<!-- eic:story:actual-story -->\n<!-- eic:candidate-data:${JSON.stringify(actual)} -->\nActual brief.\n<!-- /eic:story:actual-story -->`;
     await syncWorkspace(ctx);
     expect(
-      ctx.state
-        .candidates()
-        .map((candidate) => ({
-          id: candidate.id,
-          topic: candidate.topic,
-          issueNumber: candidate.issueNumber,
-        })),
+      ctx.state.candidates().map((candidate) => ({
+        id: candidate.id,
+        topic: candidate.topic,
+        issueNumber: candidate.issueNumber,
+      })),
     ).toEqual([
       { id: "actual-story", topic: "Actual public story", issueNumber: 9 },
     ]);
@@ -659,4 +680,52 @@ test("healthy partial coverage stays quiet and an undelivered outage resolves th
     await reportBlockers(ctx, [partial]);
     expect(discussion).toHaveLength(1);
     expect(commentWrites).toBe(1);
+  }));
+
+test("a newly added story receives Inbox even while the project item list omits it", async () =>
+  fixture(async (ctx) => {
+    omitBoardIndex = true;
+    boardStatus = null;
+    await syncWorkspace(ctx);
+    expect(boardAdds).toBe(1);
+    expect(String(boardStatus)).toBe("Inbox");
+    expect(boardWrites).toEqual(["Inbox"]);
+    expect(ctx.state.candidates()[0]?.status).toBe("Inbox");
+  }));
+
+test("a new project item's direct node status preserves a racing human Parked move", async () =>
+  fixture(async (ctx) => {
+    omitBoardIndex = true;
+    boardStatus = null;
+    let reads = 0;
+    beforeBoardRead = () => {
+      if (++reads === 2) boardStatus = "Parked";
+    };
+    await syncWorkspace(ctx);
+    expect(boardAdds).toBe(1);
+    expect(String(boardStatus)).toBe("Parked");
+    expect(boardWrites).toEqual([]);
+  }));
+
+test("a head change at the second pre-submit check returns queued status without posting stale review", async () =>
+  fixture(async (ctx) => {
+    const latest = "b".repeat(40);
+    const outcome = await reviewPullRequest(ctx, 10, async (c, request) => {
+      const result = await editor(c, request);
+      let postModelReads = 0;
+      beforePullRead = () => {
+        if (++postModelReads === 2) sha = latest;
+      };
+      return result;
+    });
+    expect(outcome).toMatchObject({
+      status: "head-changed",
+      headSha: latest,
+      queued: true,
+    });
+    expect(ctx.state.get<string | null>("review:queued:10", null)).toBe(latest);
+    expect(submissions).toBe(0);
+    expect(reviews).toEqual([]);
+    expect(boardStatus).toBe("Inbox");
+    expect(boardWrites).toEqual([]);
   }));

@@ -915,6 +915,10 @@ function consistency(ctx: Context) {
 /** Aggregate-only reporting: latest rolling snapshots are not additive totals. */
 export function metricsSummary(ctx: Context) {
   prepareSummary(ctx);
+  const primary = [
+    `${ctx.config.githubOwner}/harmonic-analyzer`,
+    `${ctx.config.githubOwner}/el400`,
+  ];
   const since = new Date(ctx.now.getTime() - SUMMARY_WEEKS * 7 * DAY)
     .toISOString()
     .slice(0, 10);
@@ -927,9 +931,15 @@ export function metricsSummary(ctx: Context) {
         `SELECT data FROM metrics
     WHERE json_extract(data,'$.kind') = 'github-daily' AND json_extract(data,'$.date') >= ?
       AND json_extract(data,'$.date') <= ?
-    ORDER BY json_extract(data,'$.date') DESC, key LIMIT ?`,
+    ORDER BY CASE WHEN json_extract(data,'$.repository') IN (?,?) THEN 0 ELSE 1 END,
+      json_extract(data,'$.date') DESC, key LIMIT ?`,
       )
-      .all(since, ctx.now.toISOString().slice(0, 10), SUMMARY_DAILY_ROWS) as {
+      .all(
+        since,
+        ctx.now.toISOString().slice(0, 10),
+        ...primary,
+        SUMMARY_DAILY_ROWS,
+      ) as {
       data: string;
     }[]
   ).map((row) => JSON.parse(row.data) as GithubDaily);
@@ -944,10 +954,15 @@ export function metricsSummary(ctx: Context) {
     const rows = ctx.state.db
       .query(
         `SELECT m.key,m.data FROM
-      (SELECT metric_key FROM metric_latest WHERE kind=? ORDER BY observed_at DESC,stream LIMIT ?) AS latest
+      (SELECT metric_key FROM metric_latest WHERE kind=?
+        ORDER BY CASE WHEN json_extract(stream,'$[1]') IN (?,?) THEN 0 ELSE 1 END,
+          observed_at DESC,stream LIMIT ?) AS latest
       JOIN metrics m ON m.key=latest.metric_key`,
       )
-      .all(kind, SUMMARY_STREAMS) as { key: string; data: string }[];
+      .all(kind, ...primary, SUMMARY_STREAMS) as {
+      key: string;
+      data: string;
+    }[];
     latest.push(
       ...rows.map((row) => ({
         key: row.key,
@@ -1062,14 +1077,28 @@ export function metricsSummary(ctx: Context) {
     consistency: consistency(ctx),
     github: {
       daily: githubDaily.filter((day) => day.date >= dailySince),
-      weekly: [...weekly.values()],
+      weekly: [...weekly.values()].sort(
+        (a, b) =>
+          Number(primary.includes(b.repository)) -
+            Number(primary.includes(a.repository)) ||
+          b.week.localeCompare(a.week) ||
+          primary.indexOf(a.repository) - primary.indexOf(b.repository) ||
+          a.repository.localeCompare(b.repository) ||
+          a.metric.localeCompare(b.metric),
+      ),
       rolling: latest
         .filter(
-          (entry) =>
+          (entry): entry is MetricEntry & { data: GithubWindow | GithubTop } =>
             entry.data.kind === "github-window" ||
             entry.data.kind === "github-top",
         )
-        .map((entry) => entry.data),
+        .map((entry) => entry.data)
+        .sort(
+          (a, b) =>
+            Number(primary.includes(b.repository)) -
+              Number(primary.includes(a.repository)) ||
+            b.observedAt.localeCompare(a.observedAt),
+        ),
       interpretation:
         "Repository traffic, not blog readership. Recent daily counts are date-keyed corrected values; weekly counts sum those observed dates only. Rolling counts, top-ten lists and uniques must not be summed.",
     },
@@ -1121,12 +1150,46 @@ export function metricsSummary(ctx: Context) {
 export function deskMetrics(ctx: Context): string {
   const summary = metricsSummary(ctx);
   const { consistency: cadence } = summary;
-  const lines = [
-    `### Weekly measurement report (${cadence.currentWeek})`,
-    `Original publications: ${cadence.originalPublications}; completed eligible weeks with an original: ${cadence.weeksWithOriginal}/${cadence.completedEligibleWeeks}; consistency: ${cadence.consistency === null ? "unavailable" : `${(cadence.consistency * 100).toFixed(1)}%`}. Paused and unfinished weeks excluded; no missed-output debt.`,
+  const rolling = summary.github.rolling.filter(
+    (metric): metric is GithubWindow => metric.kind === "github-window",
+  );
+  const lines = [`### Weekly measurement report (${cadence.currentWeek})`];
+  for (const project of ["harmonic-analyzer", "el400"]) {
+    const repository = `${ctx.config.githubOwner}/${project}`;
+    const measurements = rolling.filter(
+      (metric) => metric.repository === repository,
+    );
+    lines.push(
+      `- **${project} reach:** ${
+        measurements.length
+          ? measurements
+              .map(
+                (metric) =>
+                  `${metric.value} ${metric.metric}, ${metric.uniques} uniques (${metric.windowStart?.slice(0, 10) ?? "unknown"}–${metric.windowEnd?.slice(0, 10) ?? "unknown"}; observed ${metric.observedAt.slice(0, 10)}${summary.availability[`github:${repository}:${metric.metric}`]?.status === "unavailable" ? "; retained, collection unavailable" : ""})`,
+              )
+              .join("; ")
+          : "unavailable"
+      }. Repository traffic, not blog readership.`,
+    );
+  }
+  const profile = summary.bluesky
+    .filter(
+      (metric): metric is BlueskyProfile => metric.kind === "bluesky-profile",
+    )
+    .sort((a, b) => b.observedAt.localeCompare(a.observedAt))[0];
+  lines.push(
+    `- **Bluesky followers:** ${profile ? `${profile.followers}, observed ${profile.observedAt}` : "unavailable"}; not impressions or readership.`,
+    `- **Blog readership:** ${summary.blogReadership.length ? "measured aggregates in details" : "unavailable; actual destination data needed"}. **Conversion:** ${summary.conversionObservations.length ? "operator-supplied aggregates in details; no inferred rate" : "unavailable; measured conversion and denominators needed"}.`,
+    `- **Publishing:** ${cadence.originalPublications} originals; ${cadence.weeksWithOriginal}/${cadence.completedEligibleWeeks} completed eligible weeks with an original (${cadence.consistency === null ? "consistency unavailable" : `${(cadence.consistency * 100).toFixed(1)}% consistency`}). Paused and unfinished weeks excluded; no missed-output debt.`,
+    `- **Inputs needed:** ${summary.inputRequests.length} among the bounded publication observations; details below.`,
+    "",
+    "Small or unknown samples; missing values are unavailable, never zero. Do not add overlapping windows or uniques. Observed changes do not establish causality; likes and repository visits are not backer demand.",
+    "",
+    "<details>",
+    "<summary>Detailed repository/social measurements</summary>",
     "",
     "#### Channel reach",
-  ];
+  );
   for (const channel of summary.channels) {
     const measurements = channel.measurements
       .slice(0, 3)
@@ -1138,19 +1201,17 @@ export function deskMetrics(ctx: Context): string {
       `- ${channel.channel}: ${channel.availability}. ${measurements.length ? measurements.join("; ") : channel.caveat}`,
     );
   }
-  const profile = summary.bluesky.find(
-    (metric): metric is BlueskyProfile => metric.kind === "bluesky-profile",
-  );
-  if (profile)
+  lines.push("", "#### Weekly observed counts");
+  for (const metric of summary.github.weekly.slice(0, 8)) {
     lines.push(
-      `- Bluesky followers: ${profile.followers}, observed ${profile.observedAt}; not impressions or readership.`,
+      `- ${metric.week} ${metric.repository}: ${metric.value} ${metric.metric} across ${metric.observedDays} observed UTC days; missing days are not zero.`,
     );
+  }
+  if (!summary.github.weekly.length)
+    lines.push("- Unavailable: no recent measured daily traffic.");
   lines.push(
     "",
     "#### Repository traffic — latest rolling snapshots, not additive",
-  );
-  const rolling = summary.github.rolling.filter(
-    (metric): metric is GithubWindow => metric.kind === "github-window",
   );
   for (const metric of rolling.slice(0, 16)) {
     const availability =
@@ -1161,14 +1222,6 @@ export function deskMetrics(ctx: Context): string {
   }
   if (!rolling.length)
     lines.push("- Unavailable: no measured rolling repository traffic.");
-  lines.push("", "#### Weekly observed counts");
-  for (const metric of summary.github.weekly.slice(0, 8)) {
-    lines.push(
-      `- ${metric.week} ${metric.repository}: ${metric.value} ${metric.metric} across ${metric.observedDays} observed UTC days; missing days are not zero.`,
-    );
-  }
-  if (!summary.github.weekly.length)
-    lines.push("- Unavailable: no recent measured daily traffic.");
   lines.push("", "#### Measurement inputs needed");
   for (const request of summary.inputRequests.slice(0, 8)) {
     lines.push(
@@ -1185,7 +1238,7 @@ export function deskMetrics(ctx: Context): string {
     ...summary.caveats.map((caveat) => `- ${caveat}`),
   );
   const footer =
-    "\n\nBounded highlights only; detailed status is also bounded. Full original measurements and correction history remain in the local database. Never add overlapping rolling windows, uniques or manual snapshots.";
+    "\n\nBounded highlights only; detailed status is also bounded. Full original measurements and correction history remain in the local database. Never add overlapping rolling windows, uniques or manual snapshots.\n\n</details>";
   let report = "";
   let omitted = 0;
   for (const line of lines) {

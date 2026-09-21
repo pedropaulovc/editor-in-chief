@@ -53,7 +53,7 @@ const CAPTURE_CHECKLIST = `### Before-shop capture checklist
 - Before work: choose the setup, result, and measurement to capture. Mount the phone outside motion, chip, and control paths. Never reach for it during an operation or repeat a cut for a shot; collect detail clips only once safe.
 - Record attempted operation, what changed or failed, measured evidence, lesson/question, and next step. Add selected photos, clip timecodes, or voice-memo/transcript links. A clearly labeled local-media pointer is fine; it is not a public attachment.
 - Use original or licensed imagery, never reproduced 2014 book imagery. Raw footage is not automatically copied, uploaded, transcribed, or committed.
-- Harmonic Analyzer: use the [authoritative logbook template](${LOGBOOK}) with date, module, machine (lathe/mill/bench), part, outcome (success/partial/scrapped/aborted), and hours. Entries remain in logbook/entries/YYYY-MM-DD-<slug>.md there; raw media stays in ignored logbook/media/ and selected book figures in book/figures/hand/. This inbox is not a second factual logbook.
+- Harmonic Analyzer: use the [authoritative logbook template](${LOGBOOK}) with date, module, machine (lathe/mill/bench), part, outcome (success/partial/scrapped/aborted), and hours. Entries remain in \`logbook/entries/YYYY-MM-DD-<slug>.md\` there; raw media stays in ignored \`logbook/media/\` and selected book figures in \`book/figures/hand/\`. This inbox is not a second factual logbook.
 - A watermark-free 30–60 second vertical master may serve Shorts/TikTok. Longer videos remain milestone-driven, with no extra quota. No scripts, captions, titles, or outreach copy are generated.`;
 
 type Issue = {
@@ -409,9 +409,7 @@ async function updateComment(
 }
 
 async function connections<T>(
-  load: (
-    cursor: string | null,
-  ) => Promise<{
+  load: (cursor: string | null) => Promise<{
     nodes: T[];
     pageInfo: { hasNextPage: boolean; endCursor: string | null };
   }>,
@@ -774,6 +772,12 @@ async function ensureItem(
     },
   );
 }
+function storyLink(ctx: Context, candidate: Candidate): string {
+  const label = text(candidate.topic).replace(/[[\]]/g, "\\$&");
+  return candidate.issueNumber
+    ? `[${label}](https://github.com/${ctx.config.repository}/issues/${candidate.issueNumber})`
+    : `${label} (proposed story)`;
+}
 async function transition(
   ctx: Context,
   project: Project,
@@ -781,6 +785,7 @@ async function transition(
   expected: string | null,
   target: Status,
   restore = false,
+  knownItem?: BoardItem,
 ): Promise<boolean> {
   if (expected === target) return true;
   if (
@@ -803,7 +808,21 @@ async function transition(
   const key = `status:${project.id}:${number}:${expected ?? "unset"}:${target}:${ctx.now.toISOString()}`;
   if (!dry(ctx))
     outbox(ctx, key, "pending", "project-status", { number, expected, target });
-  const current = await boardItem(ctx, project, number);
+  // The project item-list index can lag addProjectV2ItemById. Re-read the
+  // returned node directly for new items, never assume its status stayed unset.
+  const current = knownItem
+    ? await graphql<{
+        node: { id: string; fieldValueByName: { name: string } | null } | null;
+      }>(
+        'query($id:ID!){node(id:$id){... on ProjectV2Item{id fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}',
+        { id: knownItem.id },
+        ctx.signal,
+      ).then(({ node }) =>
+        node
+          ? { ...knownItem, status: node.fieldValueByName?.name ?? null }
+          : null,
+      )
+    : await boardItem(ctx, project, number);
   if (!current || current.status !== expected) {
     if (!dry(ctx))
       outbox(
@@ -982,7 +1001,10 @@ export async function bootstrap(ctx: Context): Promise<unknown> {
     staticInbox(ctx),
     ["editorial-capture"],
   );
-  if (inbox) ctx.state.set("workspace:inbox", inbox.number);
+  if (inbox) {
+    ctx.state.set("workspace:inbox", inbox.number);
+    await updateIssue(ctx, inbox.number, "inbox", staticInbox(ctx));
+  }
   const blog = await ensureIssue(
     ctx,
     "prerequisite:publishing",
@@ -1340,9 +1362,25 @@ export async function syncWorkspace(ctx: Context): Promise<unknown> {
     if (item.status)
       ctx.state.set(`workspace:verified-status:${current.number}`, item.status);
     if (original && item.status !== "Published")
-      await transition(ctx, project, current.number, item.status, "Published");
+      await transition(
+        ctx,
+        project,
+        current.number,
+        item.status,
+        "Published",
+        false,
+        item,
+      );
     else if (!item.status)
-      await transition(ctx, project, current.number, null, "Inbox");
+      await transition(
+        ctx,
+        project,
+        current.number,
+        null,
+        "Inbox",
+        false,
+        item,
+      );
   }
   const captures = await collectHumanInputs(ctx, issues);
   for (const form of issues.filter(
@@ -1537,8 +1575,16 @@ export async function applyDesk(
       );
       if (project) {
         const item = await ensureItem(ctx, project, current);
-        if (item?.status == null)
-          await transition(ctx, project, current.number, null, "Inbox");
+        if (item && item.status == null)
+          await transition(
+            ctx,
+            project,
+            current.number,
+            null,
+            "Inbox",
+            false,
+            item,
+          );
       }
       ctx.state.putCandidate(updated);
     }
@@ -1567,7 +1613,7 @@ export async function applyDesk(
     ? `### Carry-forward\n${active.map((candidate) => `- #${candidate.issueNumber}: ${text(candidate.topic)} — carried ${carried[candidate.id]} consecutive week(s).${carried[candidate.id]! >= 2 ? " Narrow this same story to available evidence or park it; no additional assignment." : ""}`).join("\n")}\n${active.length > cap ? `There are ${active.length} manually active stories, above the cap of ${cap}. Pedro must narrow or park them; none are automatically parked.` : ""}`
     : "";
   const choiceSection = choices.length
-    ? `### Evidence-backed choices (at most three)\n${choices.map((candidate) => `- ${candidate.issueNumber ? "#" + candidate.issueNumber : "[proposed story]"}: ${text(candidate.topic)} (${candidate.pillar})`).join("\n")}`
+    ? `### Evidence-backed choices (at most three)\n${choices.map((candidate) => `- ${storyLink(ctx, candidate)} (${candidate.pillar})`).join("\n")}`
     : active.length
       ? ""
       : "No sufficiently evidenced new option is available. Nothing is assigned.";
@@ -1589,7 +1635,7 @@ export async function applyDesk(
               const candidate = [...active, ...choices].find(
                 (item) => item.id === id,
               )!;
-              return `- ${candidate.issueNumber ? "#" + candidate.issueNumber : "[proposed story]"}: ${text(candidate.topic)}`;
+              return `- ${storyLink(ctx, candidate)}`;
             })
             .join("\n")
         : "No new recommendation."
@@ -1999,6 +2045,7 @@ export async function reviewPullRequest(
   const beforeSubmit = await head(ctx, number);
   if (beforeSubmit !== result.headSha)
     return discardHead(ctx, number, beforeSubmit);
+  let racedHead: string | undefined;
   const sent = await deliver(
     ctx,
     action.marker,
@@ -2021,7 +2068,7 @@ export async function reviewPullRequest(
     async () => {
       const current = await head(ctx, number);
       if (current !== result.headSha) {
-        await discardHead(ctx, number, current);
+        racedHead = current;
         throw new Error(
           "PR head changed immediately before review submission; latest head queued",
         );
@@ -2032,7 +2079,18 @@ export async function reviewPullRequest(
         signal: ctx.signal,
       });
     },
-  );
+  ).catch((error) => {
+    if (!racedHead) throw error;
+    if (!dry(ctx))
+      outbox(ctx, action.marker, "cancelled", "submit-review", {
+        number,
+        headSha: result.headSha,
+        result,
+        body,
+      });
+    return null;
+  });
+  if (racedHead) return discardHead(ctx, number, racedHead);
   const beforeProject = await head(ctx, number);
   if (beforeProject !== result.headSha)
     return discardHead(ctx, number, beforeProject);
