@@ -1,14 +1,17 @@
-import { readFile } from 'node:fs/promises';
-import { parse } from 'dotenv';
-import { expandPath } from './config';
+import { readFile } from "node:fs/promises";
+import { parse } from "dotenv";
+import { expandPath } from "./config";
 
 const exactSecrets = new Set<string>();
-const secretName = /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|ACCESS_KEY|CLIENT_SECRET|COOKIE|CREDENTIALS?|AUTHORIZATION|CONNECTION_STRING)(?:$|_)/i;
+const secretName =
+  /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|ACCESS_KEY|CLIENT_SECRET|COOKIE|CREDENTIALS?|AUTHORIZATION|CONNECTION_STRING)(?:$|_)/i;
 
 export class SanitizationError extends Error {
-  constructor() {
-    super('source-sanitization blocker: sensitive or uncertain content withheld');
-    this.name = 'SanitizationError';
+  constructor(readonly reason = "uncertain-content") {
+    super(
+      `source-sanitization blocker: sensitive or uncertain content withheld (${reason})`,
+    );
+    this.name = "SanitizationError";
   }
 }
 
@@ -27,10 +30,10 @@ export async function loadSafetySecrets(envFile: string): Promise<void> {
   }
   let contents: string;
   try {
-    contents = await readFile(expandPath(envFile), 'utf8');
+    contents = await readFile(expandPath(envFile), "utf8");
   } catch (error) {
     // Missing Hindsight credentials must not disable independent public sources.
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw new SanitizationError();
   }
   for (const [name, value] of Object.entries(parse(contents))) {
@@ -62,22 +65,34 @@ const unsafePatterns = [
  * candidate is withheld wholesale rather than guessed-at partial redaction.
  */
 export function sanitize(text: string): string {
-  const normalized = text.normalize('NFKC');
+  const normalized = text.normalize("NFKC");
   for (const secret of exactSecrets) {
-    if (text.includes(secret) || normalized.includes(secret.normalize('NFKC'))) throw new SanitizationError();
+    if (text.includes(secret) || normalized.includes(secret.normalize("NFKC")))
+      throw new SanitizationError("registered-secret");
   }
-  if (unsafePatterns.some(pattern => pattern.test(text) || pattern.test(normalized))) throw new SanitizationError();
+  const unsafe = unsafePatterns.findIndex(
+    (pattern) => pattern.test(text) || pattern.test(normalized),
+  );
+  if (unsafe >= 0) throw new SanitizationError(`rule-${unsafe + 1}`);
   return text;
 }
 
 /** Error bodies are untrusted too: expose a bounded diagnostic, never raw JSON. */
 export function sanitizeError(error: unknown): string {
   if (error instanceof SanitizationError) return error.message;
-  if (!(error instanceof Error)) return 'Operation failed; response details withheld';
-  const message = error.message.split('\n', 1)[0] ?? '';
-  if (!message || message.length > 400 || /[{}]|(?:request|response)\s*(?:body|payload)/i.test(message)) {
-    return 'Operation failed; response details withheld';
+  if (!(error instanceof Error))
+    return "Operation failed; response details withheld";
+  const message = error.message.split("\n", 1)[0] ?? "";
+  if (
+    !message ||
+    message.length > 400 ||
+    /[{}]|(?:request|response)\s*(?:body|payload)/i.test(message)
+  ) {
+    return "Operation failed; response details withheld";
   }
-  try { return sanitize(message); }
-  catch { return 'Operation failed; sensitive diagnostic withheld'; }
+  try {
+    return sanitize(message);
+  } catch {
+    return "Operation failed; sensitive diagnostic withheld";
+  }
 }
