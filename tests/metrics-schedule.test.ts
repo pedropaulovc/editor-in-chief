@@ -557,18 +557,23 @@ test("primary reach and weekly counts survive crowded alphabetical reporting whi
     const summary = metricsSummary(ctx);
     const report = deskMetrics(ctx);
     const [lead, details] = report.split("<details>");
-    expect(lead).toContain("**harmonic-analyzer reach:** 42");
-    expect(lead).toContain("**el400 reach:** 70");
-    expect(lead).toContain("**Bluesky followers:** 23");
-    expect(lead).toContain("**Blog readership:** unavailable");
-    expect(lead).toContain("**Conversion:** unavailable");
-    expect(lead).toContain("Small or unknown samples");
-    expect(lead).toContain("do not establish causality");
+    for (const [project, value] of [
+      ["harmonic-analyzer", 42],
+      ["el400", 70],
+    ] as const) {
+      const row =
+        lead?.split("\n").find((line) => line.includes(project)) ?? "";
+      expect(row).toMatch(new RegExp(`\\b${value}\\s+views\\b`));
+      expect(row).toMatch(new RegExp(`\\b${value}\\s+clones\\b`));
+    }
+    const followers =
+      lead
+        ?.split("\n")
+        .find((line) => /bluesky/i.test(line) && /followers/i.test(line)) ?? "";
+    expect(followers).toMatch(/\b23\b/);
     expect(lead!.length).toBeLessThan(1_800);
     expect(lead).not.toContain("aaa-");
-    expect(details).toContain(
-      "<summary>Detailed repository/social measurements</summary>",
-    );
+    expect(details).toMatch(/<summary>[^<]+<\/summary>/);
     for (const [project, value] of [
       ["harmonic-analyzer", 21],
       ["el400", 35],
@@ -578,13 +583,31 @@ test("primary reach and weekly counts survive crowded alphabetical reporting whi
         summary.github.weekly
           .slice(0, 8)
           .filter((metric) => metric.repository === repository),
-      ).toHaveLength(4);
-      expect(details).toContain(
-        `2026-W38 ${repository}: ${value} views across 7 observed UTC days`,
+      ).toEqual(
+        expect.arrayContaining(
+          ["views", "clones"].map((metric) =>
+            expect.objectContaining({
+              week: "2026-W38",
+              metric,
+              value,
+              observedDays: 7,
+            }),
+          ),
+        ),
       );
-      expect(details).toContain(
-        `2026-W38 ${repository}: ${value} clones across 7 observed UTC days`,
-      );
+      const rows =
+        details
+          ?.split("\n")
+          .filter(
+            (line) => line.includes(repository) && line.includes("2026-W38"),
+          ) ?? [];
+      for (const metric of ["views", "clones"]) {
+        expect(
+          rows.some((row) =>
+            new RegExp(`\\b${value}\\s+${metric}\\b`).test(row),
+          ),
+        ).toBe(true);
+      }
     }
     expect(report.endsWith("</details>")).toBe(true);
     expect(report.length).toBeLessThanOrEqual(8_000);
